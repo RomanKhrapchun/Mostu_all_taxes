@@ -300,28 +300,33 @@ const getRequisitesForTaxType = (settings, taxType) => {
  * @returns {string} Відформатоване призначення платежу
  */
 const formatPaymentPurpose = (charge, settings, taxType) => {
-    const taxTypeMap = {
-        'land': 'land',
-        'non_residential': 'non_residential',
-        'residential': 'residential',
-        'rent': 'rent',
-        'mpz': 'mpz'
+    console.log('🔍 formatPaymentPurpose викликано:', { taxType, charge: charge?.id });
+    
+    const taxNumber = charge.tax_number || "НЕ ВКАЗАНО";
+    const payerName = charge.payer_name?.toUpperCase() || "НЕ ВКАЗАНО";
+    
+    const settingsFields = {
+        'non_residential': 'non_residential_debt_purpose',
+        'residential': 'residential_debt_purpose',
+        'land': 'land_debt_purpose',
+        'rent': 'orenda_debt_purpose',
+        'mpz': 'mpz_purpose'
     };
     
-    const mappedType = taxTypeMap[taxType] || taxType;
-    const requisites = getRequisitesForTaxType(settings, mappedType);
+    const purposeField = settingsFields[taxType] || settingsFields['land'];
+    console.log('🔍 Шукаємо поле:', purposeField);
+    console.log('🔍 Значення з settings:', settings?.[purposeField]);
     
-    if (!requisites || !requisites.code) {
-        return "НЕ ВКАЗАНО";
-    }
+    let purpose = settings?.[purposeField] || `101;${taxNumber};18010700;${taxType} податок;`;
     
-    // Формат: *;101;ІПН;ПІБ;КОД;ОПИС
-    const ipn = charge.tax_number || "";
-    const pib = charge.payer_name || "";
-    const code = requisites.code || "";
-    const description = requisites.description || "";
+    console.log('🔍 Purpose до заміни:', purpose);
     
-    return `*;101;${ipn};${pib};${code};${description}`;
+    // Замінюємо плейсхолдери
+    purpose = purpose.replace(/#IPN#/g, `${taxNumber};${payerName}`);
+    
+    console.log('🔍 Purpose після заміни:', purpose);
+    
+    return purpose;
 };
 
 /**
@@ -1407,8 +1412,11 @@ const createTaxBlockContent = (block, blockNumber, settings, mainCharge) => {
     return content;
 };
 
-// Функція для додавання довідкової інформації (залишається як є)
-const addReferenceInformation = (patches, settings, debtorInfo, mainCharge) => {
+// Функція для додавання довідкової інформації
+const addReferenceInformation = (patches, settings, debtorInfo, charge) => {
+    // Визначаємо тип податку для charge
+    const { taxType } = determineTaxType(charge);
+    
     // Заборгованості
     const debtAmounts = {
         non_residential: formatDebtAmount(debtorInfo?.non_residential_debt || 0),
@@ -1431,14 +1439,30 @@ const addReferenceInformation = (patches, settings, debtorInfo, mainCharge) => {
             ],
         };
     });
-    
-    // ✅ ДОДАЄМО РЕКВІЗИТИ ТА ПРИЗНАЧЕННЯ ПЛАТЕЖУ ДЛЯ КОЖНОГО ТИПУ
-    const taxTypes = ['non_residential', 'residential', 'land', 'rent', 'mpz'];
+
+    // ⭐ КРИТИЧНО: Додаємо призначення платежів для всіх типів включно з 'main'
+    const taxTypes = ['main', 'non_residential', 'residential', 'land', 'rent', 'mpz'];
     
     taxTypes.forEach(type => {
+        // Для 'main' використовуємо фактичний taxType з charge
+        const actualType = type === 'main' ? taxType : type;
+        
+        patches[`payment_purpose_${type}`] = {
+            type: PatchType.PARAGRAPH,
+            children: [
+                new TextRun({
+                    text: formatPaymentPurpose(charge, settings, actualType),
+                    font: FONT_CONFIG.family,
+                    size: FONT_CONFIG.sizes.extraSmall
+                })
+            ],
+        };
+    });
+
+    // Додаємо реквізити отримувачів для всіх типів (окрім main)
+    ['non_residential', 'residential', 'land', 'rent', 'mpz'].forEach(type => {
         const requisites = getRequisitesForTaxType(settings, type);
         
-        // ЄДРПОУ
         patches[`${type}_edrpou`] = {
             type: PatchType.PARAGRAPH,
             children: [
@@ -1450,7 +1474,6 @@ const addReferenceInformation = (patches, settings, debtorInfo, mainCharge) => {
             ],
         };
         
-        // Найменування отримувача
         patches[`${type}_recipient_name`] = {
             type: PatchType.PARAGRAPH,
             children: [
@@ -1462,24 +1485,11 @@ const addReferenceInformation = (patches, settings, debtorInfo, mainCharge) => {
             ],
         };
         
-        // Рахунок
         patches[`${type}_account`] = {
             type: PatchType.PARAGRAPH,
             children: [
                 new TextRun({
                     text: requisites?.account || "НЕ ВКАЗАНО",
-                    font: FONT_CONFIG.family,
-                    size: FONT_CONFIG.sizes.extraSmall
-                })
-            ],
-        };
-        
-        // ✅ ПРИЗНАЧЕННЯ ПЛАТЕЖУ (це було проблемою!)
-        patches[`payment_purpose_${type}`] = {
-            type: PatchType.PARAGRAPH,
-            children: [
-                new TextRun({
-                    text: formatPaymentPurpose(mainCharge, settings, type) || "НЕ ВКАЗАНО",
                     font: FONT_CONFIG.family,
                     size: FONT_CONFIG.sizes.extraSmall
                 })
